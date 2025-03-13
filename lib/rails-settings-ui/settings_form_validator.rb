@@ -8,19 +8,26 @@ module RailsSettingsUi
     predicate(:form_hash?) do |value|
       begin
         JSON.parse(value.gsub(/\=\>/, ':'))
+        true
       rescue JSON::ParserError
         false
       end
     end
   end
 
-  class SettingsSchema < Dry::Validation::Schema::Params
-    predicates(CustomPredicates)
+  class SettingsFormContract < Dry::Validation::Contract
+    params do
+      # dynamically built below
+    end
+
+    config.messages.load_paths << 'config/locales/errors.yml'
+    config.messages.backend = :i18n
+    config.predicates = CustomPredicates
   end
 
   class SettingsFormValidator
     VALIDATABLE_TYPES = {
-      (1.class == Integer ? Integer : Fixnum) => :int?,
+      Integer => :int?,
       Float => :float?,
       ActiveSupport::Duration => :int?,
       ActiveSupport::HashWithIndifferentAccess => :form_hash?
@@ -29,35 +36,31 @@ module RailsSettingsUi
     def initialize(default_settings, settings)
       @default_settings = default_settings
       @settings = settings
-      build_validation_schema
+      @contract = build_validation_contract
     end
 
     def errors
-      @schema.call(@settings.to_hash).messages
+      result = @contract.call(@settings.to_hash)
+      result.errors.to_h
     end
 
     private
 
-    def build_validation_schema
-      registry = Dry::Validation::PredicateRegistry.new(CustomPredicates)
-      v = Dry::Validation::Schema::Value.new(registry: registry)
+    def build_validation_contract
+      keys = validatable_settings
 
-      validatable_settings.each do |name, value|
-        predicate = VALIDATABLE_TYPES[value.class]
-        v.required(name.to_sym).filled(predicate) if predicate
-      end
-
-      SettingsSchema.configure do |config|
-        config.rules = v.rules
-        config.messages = :i18n
-      end
-
-      @schema = SettingsSchema.new
+      Class.new(SettingsFormContract) do
+        params do
+          keys.each do |name, value|
+            predicate = VALIDATABLE_TYPES[value.class]
+            required(name.to_sym).filled(predicate) if predicate
+          end
+        end
+      end.new
     end
 
     def validatable_settings
-      @default_settings.select { |_, value| value.class.in?(VALIDATABLE_TYPES.keys) }
+      @default_settings.select { |_, value| VALIDATABLE_TYPES.key?(value.class) }
     end
-
   end
 end
